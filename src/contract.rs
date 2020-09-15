@@ -160,26 +160,163 @@ pub fn try_get_last_shot<S: Storage>(storage: &S, credentials: Credentials) -> S
     to_binary(&last_shot)
 }
 
+
+
 #[cfg(test)]
 mod tests {
-    use cosmwasm_std::testing::{mock_dependencies, mock_env};
-    use cosmwasm_std::{coins, from_binary, from_slice, to_vec, StdError};
-
-    use crate::state::{Herd, Orientation};
-
     use super::*;
+    use cosmwasm_std::testing::{mock_dependencies, mock_env};
+    use cosmwasm_std::{coins, StdError, HandleResult, from_binary};
+    use crate::state::{Orientation, Herd, Pasture};
 
     #[test]
-    fn test_herd_serialize() {
-        let serialized =
-            "{\"orientation\": \"horizontal\", \"length\": 3, \"coords\": {\"x\": 2, \"y\": 4}}"
-                .as_bytes();
-        let herd: Herd = from_slice(&serialized).unwrap();
-        println!("{:?}", herd);
+    fn main_game_flow() {
+        let mut deps = mock_dependencies(20, &[]);
 
-        let herd = Herd::new(4, 6, 3, Orientation::Vertical);
-        let serialized = to_vec(&herd).unwrap();
-        let serialized = String::from_utf8_lossy(&serialized);
-        println!("{:?}", serialized);
+        let msg = InitMsg { };
+        let env = mock_env(&deps.api, "creator", &coins(1000, "token"));
+
+        // we can just call .unwrap() to assert this was a success
+        let res = init(&mut deps, env, msg).unwrap();
+        assert_eq!(0, res.messages.len());
+
+        // Create new game with "foo" name
+        let env = mock_env(&deps.api, "anyone", &coins(2, "token"));
+        let msg = HandleMsg::NewGame { name: "foo".to_string() };
+        let res: HandleResponse = handle(&mut deps, env, msg).unwrap();
+        assert_eq!(0, res.messages.len());
+
+        // Create new game with "foo" name duplicated - ERROR
+        let env = mock_env(&deps.api, "anyone", &coins(2, "token"));
+        let msg = HandleMsg::NewGame { name: "foo".to_string() };
+        let res: HandleResult = handle(&mut deps, env, msg);
+
+        match res.unwrap_err() {
+            StdError::GenericErr { msg, .. } => assert_eq!(msg, "game with name \"foo\" already exists"),
+            e => panic!("Unexpected error: {:?}", e),
+        }
+
+        // Player1 - Join the game "foo" with this pasture
+        //    | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+        //    |---------------------------------------|
+        //  0 | X | x |   |   |   |   | X | x | x | x |
+        //  1 |   |   |   |   |   |   |   |   |   |   |
+        //  2 |   |   | X | X | x | x |   |   |   |   |
+        //  3 |   |   | x |   |   |   |   |   |   |   |
+        //  4 |   |   | x |   |   |   |   |   |   |   |
+        //  5 |   |   | x |   |   |   |   |   |   |   |
+        //  6 |   |   | x |   | X |   |   |   |   |   |
+        //  7 |   |   |   |   | x |   |   |   |   |   |
+        //  8 |   |   |   |   | x |   |   |   |   |   |
+        //  9 |   |   |   |   |   |   |   |   |   |   |
+        //    |---------------------------------------|
+	    //  2x -> (0,0,Horizontal)
+	    //  3x -> (3,2,Horizontal)
+	    //  3x -> (4,6,Vertical)
+	    //  4x -> (6,0,Horizontal)
+	    //  5x -> (2,2,Vertical)
+
+        let msg = HandleMsg::Join { 
+            credentials: Credentials {
+                game: "foo".to_string(),
+                username: "player1".to_string(),
+                password: "1111".to_string(),
+            }, 
+            pasture:Pasture::new(
+                vec![
+                    // 2x Length Herds
+                    Herd::new(0, 0, 2, Orientation::Horizontal),
+                    // 3x Length Herds
+                    Herd::new(3, 2, 3, Orientation::Horizontal),
+                    Herd::new(4, 6, 3, Orientation::Vertical),
+                    // 4x Length Herds
+                    Herd::new(6, 0, 4, Orientation::Horizontal),
+                    // 5x Length Herds
+                    Herd::new(2, 2, 5, Orientation::Vertical),
+                ],
+                vec![]
+            )
+        };
+
+
+        let env = mock_env(&deps.api, "anyone", &coins(2, "token"));
+        let res: HandleResponse = handle(&mut deps, env, msg).unwrap();
+        assert_eq!(0, res.messages.len());
+
+        // Player2 - Join the game "foo" with this pasture
+        //    | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+        //    |---------------------------------------|
+        //  0 |   |   |   |   |   |   |   |   |   |   |
+        //  1 |   |   |   |   |   |   |   |   |   |   |
+        //  2 |   |   |   |   |   |   |   |   |   |   |
+        //  3 |   |   |   |   |   |   |   |   | X |   |
+        //  4 |   | X | x | x | X | x | x |   | x |   |
+        //  5 |   |   |   |   |   |   | X |   | x |   |
+        //  6 |   |   |   |   |   |   | x |   | x |   |
+        //  7 |   |   |   |   |   |   |   |   |   |   |
+        //  8 |   |   |   |   |   |   |   |   |   |   |
+        //  9 |   |   |   |   |   | X | x | x | x | x |
+        //    |---------------------------------------|
+	    //  2x -> (6,5,Vertical)
+	    //  3x -> (1,4,Horizontal)
+	    //  3x -> (4,4,Horizontal)
+	    //  4x -> (8,3,Vertical)
+        //  5x -> (5,9,Horizontal)
+        
+        // Other player joins
+        let msg = HandleMsg::Join { 
+            credentials: Credentials {
+                game: "foo".to_string(),
+                username: "player2".to_string(),
+                password: "2222".to_string(),
+            }, 
+            pasture:Pasture::new(
+                vec![
+                    // 2x Length Herds
+                    Herd::new(6, 5, 2, Orientation::Vertical),
+                    // 3x Length Herds
+                    Herd::new(1, 4, 3, Orientation::Horizontal),
+                    Herd::new(4, 4, 3, Orientation::Horizontal),
+                    // 4x Length Herds
+                    Herd::new(8, 3, 4, Orientation::Vertical),
+                    // 5x Length Herds
+                    Herd::new(5, 9, 5, Orientation::Horizontal),
+                ],
+                vec![]
+            )
+        };
+
+        let env = mock_env(&deps.api, "anyone", &coins(2, "token"));
+        let res: HandleResponse = handle(&mut deps, env, msg).unwrap();
+        assert_eq!(0, res.messages.len());
+
+        // Player 1 - Query pasture created
+        let res = query(&mut deps, QueryMsg::MyPasture { 
+            credentials: Credentials {
+                game: "foo".to_string(),
+                username: "player1".to_string(),
+                password: "1111".to_string(),
+            }
+        }).unwrap();
+        //println!("{:?}", res.to_base64());
+        /*
+            {"herds":[{"coords":{"x":0,"y":0},"length":2,"orientation":"horizontal"},{"coords":{"x":3,"y":2},"length":3,"orientation":"horizontal"},{"coords":{"x":4,"y":6},"length":3,"orientation":"vertical"},{"coords":{"x":6,"y":0},"length":4,"orientation":"horizontal"},{"coords":{"x":2,"y":2},"length":5,"orientation":"vertical"}],"shots":[]}
+        */
+        assert_eq!("eyJoZXJkcyI6W3siY29vcmRzIjp7IngiOjAsInkiOjB9LCJsZW5ndGgiOjIsIm9yaWVudGF0aW9uIjoiaG9yaXpvbnRhbCJ9LHsiY29vcmRzIjp7IngiOjMsInkiOjJ9LCJsZW5ndGgiOjMsIm9yaWVudGF0aW9uIjoiaG9yaXpvbnRhbCJ9LHsiY29vcmRzIjp7IngiOjQsInkiOjZ9LCJsZW5ndGgiOjMsIm9yaWVudGF0aW9uIjoidmVydGljYWwifSx7ImNvb3JkcyI6eyJ4Ijo2LCJ5IjowfSwibGVuZ3RoIjo0LCJvcmllbnRhdGlvbiI6Imhvcml6b250YWwifSx7ImNvb3JkcyI6eyJ4IjoyLCJ5IjoyfSwibGVuZ3RoIjo1LCJvcmllbnRhdGlvbiI6InZlcnRpY2FsIn1dLCJzaG90cyI6W119", res.to_base64());
+
+        // Player 2 - Query pasture created
+        let res = query(&mut deps, QueryMsg::MyPasture { 
+            credentials: Credentials {
+                game: "foo".to_string(),
+                username: "player2".to_string(),
+                password: "2222".to_string(),
+            }
+        }).unwrap();
+        //println!("{:?}", res.to_base64());
+        /*
+            {"herds":[{"coords":{"x":0,"y":0},"length":2,"orientation":"horizontal"},{"coords":{"x":3,"y":2},"length":3,"orientation":"horizontal"},{"coords":{"x":4,"y":6},"length":3,"orientation":"vertical"},{"coords":{"x":6,"y":0},"length":4,"orientation":"horizontal"},{"coords":{"x":2,"y":2},"length":5,"orientation":"vertical"}],"shots":[]}
+        */
+        assert_eq!("eyJoZXJkcyI6W3siY29vcmRzIjp7IngiOjAsInkiOjB9LCJsZW5ndGgiOjIsIm9yaWVudGF0aW9uIjoiaG9yaXpvbnRhbCJ9LHsiY29vcmRzIjp7IngiOjMsInkiOjJ9LCJsZW5ndGgiOjMsIm9yaWVudGF0aW9uIjoiaG9yaXpvbnRhbCJ9LHsiY29vcmRzIjp7IngiOjQsInkiOjZ9LCJsZW5ndGgiOjMsIm9yaWVudGF0aW9uIjoidmVydGljYWwifSx7ImNvb3JkcyI6eyJ4Ijo2LCJ5IjowfSwibGVuZ3RoIjo0LCJvcmllbnRhdGlvbiI6Imhvcml6b250YWwifSx7ImNvb3JkcyI6eyJ4IjoyLCJ5IjoyfSwibGVuZ3RoIjo1LCJvcmllbnRhdGlvbiI6InZlcnRpY2FsIn1dLCJzaG90cyI6W119", res.to_base64());
+
     }
 }
